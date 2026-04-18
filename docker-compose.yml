@@ -6,6 +6,10 @@ services:
       - "8000:8000"
     environment:
       FRONTEND_ORIGIN: http://localhost:5173,http://127.0.0.1:5173
+      LLM_MODE: ${LLM_MODE:-stub}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OPENAI_BASE_URL: ${OPENAI_BASE_URL:-}
+      OPENAI_MODEL: ${OPENAI_MODEL:-}
 
   frontend:
     build:
