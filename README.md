@@ -19,26 +19,41 @@ Optional when `LLM_MODE=real`:
 
 - **`OPENAI_BASE_URL`** — defaults to `https://api.openai.com/v1` (other OpenAI-compatible bases may work).
 - **`OPENAI_MODEL`** — defaults to `gpt-4o-mini`.
+- **`OPENAI_JSON_OBJECT`** — defaults to **`1`**. When enabled, requests use `response_format: json_object` (helps structured output on OpenAI-compatible APIs). Set to **`0`** if your provider rejects that parameter.
 
-Copy `.env.example` to `.env` at the repo root and set variables as needed. Compose passes these into the backend service (see `docker-compose.yml`).
+**Environment files:** Put secrets and LLM settings in a **project `.env`** file next to `docker-compose.yml` (copy from `.env.example`). The backend service uses Compose **`env_file: .env`** so `OPENAI_API_KEY` is taken **from that file** into the container.
+
+**Important:** Do **not** rely on a shell `export OPENAI_API_KEY=...` for the API key unless you know what you are doing. For `OPENAI_API_KEY`, a value exported in the shell (for example an old placeholder like `YOUR_KEY_HERE`) can override the project `.env` when using pass-through env—this project **does not** pass `OPENAI_API_KEY` through the shell for that reason; use `.env` for the key. Optional vars like `OPENAI_BASE_URL` may still be overridden by the shell—see `docker-compose.yml`.
+
+Set `OPENAI_API_KEY` to the secret issued by your provider. Never commit `.env`.
 
 **Stub mode (default)**
 
 ```bash
-# optional; stub is the default when LLM_MODE is unset
-export LLM_MODE=stub
 docker compose up --build
 ```
+
+With `LLM_MODE=stub` or unset in `.env` / environment (default in Compose is `stub`).
 
 **Real mode (requires a key)**
 
+Either set variables in `.env`:
+
 ```bash
-export LLM_MODE=real
-export OPENAI_API_KEY='your-key-here'
+cp .env.example .env
+# Edit .env: set LLM_MODE=real and OPENAI_API_KEY=<your real API key>
 docker compose up --build
 ```
 
-If `LLM_MODE=real` but `OPENAI_API_KEY` is missing or empty, `POST /process` returns **503** with a clear error message (it does not crash the app).
+Or export in the shell (no `.env` required):
+
+```bash
+export LLM_MODE=real
+export OPENAI_API_KEY="..."   # value from your provider
+docker compose up --build
+```
+
+If `LLM_MODE=real` and `OPENAI_API_KEY` is **unset**, **empty**, or **whitespace-only** after trim, `POST /process` returns **503** (configuration error; **no** provider call). The backend does **not** inspect key contents. Invalid or revoked keys may still yield **502** from the provider after a call.
 
 ## Run
 

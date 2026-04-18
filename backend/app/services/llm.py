@@ -73,8 +73,54 @@ def _stub_generate(text: str, mode: ProcessMode) -> ProcessResponse:
     )
 
 
+def _json_object_mode_enabled() -> bool:
+    raw = (os.environ.get("OPENAI_JSON_OBJECT") or "1").strip().lower()
+    return raw not in ("0", "false", "no", "off")
+
+
+def _build_real_system_prompt(mode: ProcessMode) -> str:
+    mode_rules = {
+        ProcessMode.analyze: (
+            "Focus priority: make **summary** and **intent** the most detailed and useful fields. "
+            "Keep **reply** and **tasks** shorter and supportive, but still non-empty strings "
+            "(use a brief placeholder sentence for reply if needed; tasks can be one or two items)."
+        ),
+        ProcessMode.reply: (
+            "Focus priority: make **reply** the most detailed and useful field—this is what the user "
+            "will send back. Keep **summary**, **intent**, and **tasks** brief but still meaningful."
+        ),
+        ProcessMode.extract_tasks: (
+            "Focus priority: make **tasks** the richest field—a clear list of actionable strings. "
+            "Keep **summary**, **intent**, and **reply** short; do not let them overshadow the task list."
+        ),
+    }
+    return (
+        "You output a single JSON object only. The entire reply must be valid JSON with no text "
+        "before or after it. Do not use markdown code fences (no ```). Do not add commentary, "
+        "headings, or explanations outside the JSON.\n\n"
+        "Required keys (exactly these four, all required):\n"
+        '- "summary": string\n'
+        '- "intent": string\n'
+        '- "reply": string\n'
+        '- "tasks": array of strings (each item one short actionable task)\n\n'
+        f"Selected mode: {mode.value!r}\n"
+        f"{mode_rules[mode]}\n\n"
+        "Constraints: use double-quoted keys and strings only; no trailing commas; "
+        "tasks must be a JSON array (use [] only if there is truly nothing actionable, prefer at least one item)."
+    )
+
+
+def _build_real_user_message(text: str) -> str:
+    return (
+        "Return one JSON object as specified in the system message. "
+        "User input to process:\n\n"
+        f"{text}"
+    )
+
+
 def _real_generate(text: str, mode: ProcessMode) -> ProcessResponse:
-    api_key = os.environ.get("OPENAI_API_KEY", "").strip()
+    raw = os.environ.get("OPENAI_API_KEY", "")
+    api_key = raw.strip()
     if not api_key:
         raise LLMConfigurationError(
             "LLM_MODE=real requires OPENAI_API_KEY to be set (non-empty).",
@@ -84,15 +130,8 @@ def _real_generate(text: str, mode: ProcessMode) -> ProcessResponse:
     model = (os.environ.get("OPENAI_MODEL") or "gpt-4o-mini").strip()
     url = f"{base}/chat/completions"
 
-    system = (
-        "You are a work assistant. Respond with a single JSON object only, no markdown fences, "
-        'with keys: "summary" (string), "intent" (string), "reply" (string), "tasks" (array of strings). '
-        "Tasks must be short actionable strings. "
-        f"The user selected mode is {mode.value!r}: "
-        "analyze emphasizes summary and intent; reply emphasizes the reply text; "
-        "extract_tasks emphasizes a rich tasks list."
-    )
-    user = f"User message:\n{text}"
+    system = _build_real_system_prompt(mode)
+    user = _build_real_user_message(text)
 
     payload: dict[str, Any] = {
         "model": model,
@@ -100,8 +139,10 @@ def _real_generate(text: str, mode: ProcessMode) -> ProcessResponse:
             {"role": "system", "content": system},
             {"role": "user", "content": user},
         ],
-        "temperature": 0.3,
+        "temperature": 0.2,
     }
+    if _json_object_mode_enabled():
+        payload["response_format"] = {"type": "json_object"}
 
     headers = {
         "Authorization": f"Bearer {api_key}",

@@ -50,6 +50,68 @@ def test_process_real_mode_missing_api_key(monkeypatch: pytest.MonkeyPatch) -> N
     assert "OPENAI_API_KEY" in body["detail"]
 
 
+def test_process_real_mode_whitespace_only_api_key(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("LLM_MODE", "real")
+    monkeypatch.setenv("OPENAI_API_KEY", "   \t  ")
+
+    response = client.post(
+        "/process",
+        json={"text": "hello", "mode": "analyze"},
+    )
+    assert response.status_code == 503
+    body = response.json()
+    assert "OPENAI_API_KEY" in body["detail"]
+
+
+def test_process_real_mode_accepts_sk_prefixed_key(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Real provider keys often start with sk-; must not be rejected as placeholders."""
+    monkeypatch.setenv("LLM_MODE", "real")
+    monkeypatch.setenv(
+        "OPENAI_API_KEY",
+        "sk-proj-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    )
+
+    class FakeResponse:
+        status_code = 200
+
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self) -> dict:
+            return {
+                "choices": [
+                    {
+                        "message": {
+                            "content": (
+                                '{"summary":"S","intent":"I","reply":"R","tasks":["t"]}'
+                            ),
+                        },
+                    },
+                ],
+            }
+
+    class FakeClient:
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            pass
+
+        def __enter__(self) -> "FakeClient":
+            return self
+
+        def __exit__(self, *args: object) -> None:
+            return None
+
+        def post(self, url: str, **kwargs: object) -> FakeResponse:
+            return FakeResponse()
+
+    monkeypatch.setattr("app.services.llm.httpx.Client", FakeClient)
+
+    response = client.post(
+        "/process",
+        json={"text": "hello", "mode": "analyze"},
+    )
+    assert response.status_code == 200
+
+
 def test_process_real_mode_success_mocked(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("LLM_MODE", "real")
     monkeypatch.setenv("OPENAI_API_KEY", "sk-test-key")

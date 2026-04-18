@@ -4,12 +4,18 @@ services:
       context: ./backend
     ports:
       - "8000:8000"
+    # Load project `.env` into the container. Variables listed under `environment` below override
+    # these for the same key—so `OPENAI_API_KEY` is NOT listed there, otherwise a stale shell
+    # `export OPENAI_API_KEY=...` would override the value from `.env` when using pass-through.
+    env_file:
+      - path: .env
+        required: false
     environment:
-      FRONTEND_ORIGIN: http://localhost:5173,http://127.0.0.1:5173
-      LLM_MODE: ${LLM_MODE:-stub}
-      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
-      OPENAI_BASE_URL: ${OPENAI_BASE_URL:-}
-      OPENAI_MODEL: ${OPENAI_MODEL:-}
+      - FRONTEND_ORIGIN=http://localhost:5173,http://127.0.0.1:5173
+      - LLM_MODE=${LLM_MODE:-stub}
+      - OPENAI_BASE_URL
+      - OPENAI_MODEL
+      - OPENAI_JSON_OBJECT
 
   frontend:
     build:
