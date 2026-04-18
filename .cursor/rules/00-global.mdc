@@ -1,0 +1,11 @@
+---
+description: Global project rules
+alwaysApply: true
+---
+
+Use Python 3.11+ for backend.
+Use FastAPI and Pydantic for backend API.
+Prefer small, reviewable changes.
+Do not introduce database, auth, queues, or caching unless explicitly requested.
+All run instructions must use Docker Compose.
+When creating code, also provide verification steps.

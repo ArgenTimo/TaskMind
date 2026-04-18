@@ -1,0 +1,10 @@
+---
+description: Backend implementation rules
+globs: backend/**/*.py
+---
+
+Keep route handlers thin.
+Put business logic into service functions.
+Use typed request and response models.
+Return predictable JSON responses.
+Write pytest tests for non-trivial logic.
