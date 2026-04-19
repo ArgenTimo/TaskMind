@@ -1,11 +1,23 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" data-theme="dark">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#0c0e12" />
     <title>TaskMind</title>
   </head>
   <body>
+    <script>
+      (function () {
+        try {
+          var t = localStorage.getItem("taskmind-theme");
+          document.documentElement.dataset.theme =
+            t === "light" || t === "dark" ? t : "dark";
+        } catch (e) {
+          document.documentElement.dataset.theme = "dark";
+        }
+      })();
+    </script>
     <div id="root"></div>
     <script type="module" src="/src/main.tsx"></script>
   </body>

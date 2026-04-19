@@ -1,4 +1,5 @@
 import json
+from unittest.mock import MagicMock, patch
 
 import pytest
 from fastapi.testclient import TestClient
@@ -17,6 +18,38 @@ def test_health() -> None:
     response = client.get("/health")
     assert response.status_code == 200
     assert response.json() == {"status": "ok"}
+
+
+def test_runtime_config() -> None:
+    response = client.get("/runtime_config")
+    assert response.status_code == 200
+    data = response.json()
+    assert "default_llm_mode" in data
+    assert "default_prompt_version" in data
+    assert "default_model" in data
+    assert "default_base_url" in data
+    assert "available_prompt_versions" in data
+    assert isinstance(data["available_prompt_versions"], list)
+    assert "real_mode_supported" in data
+    assert "json_object_request_enabled" in data
+
+
+def test_process_runtime_override_stub_bypasses_real_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Request-scoped stub mode must not require OPENAI_API_KEY even if LLM_MODE=real in env."""
+    monkeypatch.setenv("LLM_MODE", "real")
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+
+    response = client.post(
+        "/process",
+        json={
+            "text": "hello",
+            "mode": "analyze",
+            "runtime": {"llm_mode": "stub"},
+        },
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["summary"].startswith("[analyze]")
 
 
 def test_process_valid() -> None:
@@ -349,3 +382,77 @@ def test_process_batch_invalid_empty_items() -> None:
 def test_process_batch_invalid_top_level() -> None:
     response = client.post("/process_batch", json={})
     assert response.status_code == 422
+
+
+def test_models_list_stub_mode() -> None:
+    response = client.get("/models")
+    assert response.status_code == 200
+    data = response.json()
+    assert data["models"] == []
+    assert data["source"] == "stub_mode"
+    assert data["detail"]
+    assert "base_url" in data
+
+
+def test_models_list_no_api_key(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("LLM_MODE", "real")
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+
+    response = client.get("/models")
+    assert response.status_code == 200
+    data = response.json()
+    assert data["models"] == []
+    assert data["source"] == "no_api_key"
+    assert data["detail"]
+    assert data["base_url"].startswith("http")
+
+
+@patch("httpx.Client")
+def test_models_list_live_ok(mock_client_class: MagicMock, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("LLM_MODE", "real")
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test-key")
+
+    mock_cm = MagicMock()
+    mock_client_class.return_value.__enter__.return_value = mock_cm
+    mock_resp = MagicMock()
+    mock_resp.status_code = 200
+    mock_resp.json.return_value = {
+        "data": [
+            {"id": "gpt-4o-mini", "object": "model"},
+            {"id": "gpt-4o", "object": "model"},
+        ],
+    }
+    mock_cm.get.return_value = mock_resp
+
+    response = client.get("/models")
+    assert response.status_code == 200
+    data = response.json()
+    assert data["source"] == "live"
+    assert data["models"] == ["gpt-4o", "gpt-4o-mini"]
+    assert data["detail"] is None
+    mock_cm.get.assert_called_once()
+    call_kw = mock_cm.get.call_args
+    assert "/models" in str(call_kw)
+
+
+@patch("httpx.Client")
+def test_models_list_provider_http_error(
+    mock_client_class: MagicMock,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("LLM_MODE", "real")
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test-key")
+
+    mock_cm = MagicMock()
+    mock_client_class.return_value.__enter__.return_value = mock_cm
+    mock_resp = MagicMock()
+    mock_resp.status_code = 401
+    mock_resp.text = "unauthorized"
+    mock_cm.get.return_value = mock_resp
+
+    response = client.get("/models")
+    assert response.status_code == 200
+    data = response.json()
+    assert data["models"] == []
+    assert data["source"] == "provider_error"
+    assert "401" in (data["detail"] or "")
