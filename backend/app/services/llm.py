@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import logging
 import os
 import re
 from pathlib import Path
@@ -15,8 +14,6 @@ from pydantic import ValidationError
 from app.schemas import ProcessMode, ProcessResponse
 
 LLMSourceMode = Literal["stub", "real"]
-
-logger = logging.getLogger(__name__)
 
 _PROMPTS_DIR = Path(__file__).resolve().parent.parent.parent / "prompts"
 _DEFAULT_PROMPT_VERSION = "v1"
@@ -126,6 +123,11 @@ def _prompt_version() -> str:
     return raw or _DEFAULT_PROMPT_VERSION
 
 
+def get_prompt_version() -> str:
+    """Active PROMPT_VERSION label (for real-mode observability)."""
+    return _prompt_version()
+
+
 def _build_real_system_prompt(mode: ProcessMode) -> str:
     version = _prompt_version()
     path = _PROMPTS_DIR / f"process_{version}.md"
@@ -148,13 +150,6 @@ def _build_real_system_prompt(mode: ProcessMode) -> str:
                 f"PROMPT_VERSION={version!r}: prompt file {path.name} missing or empty section "
                 f"{key!r}",
             )
-
-    logger.info(
-        "real_llm prompt_version=%s mode=%s file=%s",
-        version,
-        mode.value,
-        path.name,
-    )
 
     return (
         sections["HEAD"]
