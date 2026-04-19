@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
+from pathlib import Path
 from typing import Any, Literal
 
 import httpx
@@ -13,6 +15,11 @@ from pydantic import ValidationError
 from app.schemas import ProcessMode, ProcessResponse
 
 LLMSourceMode = Literal["stub", "real"]
+
+logger = logging.getLogger(__name__)
+
+_PROMPTS_DIR = Path(__file__).resolve().parent.parent.parent / "prompts"
+_DEFAULT_PROMPT_VERSION = "v1"
 
 
 class LLMConfigurationError(Exception):
@@ -97,35 +104,64 @@ def _json_object_mode_enabled() -> bool:
     return raw not in ("0", "false", "no", "off")
 
 
+def _parse_prompt_markdown_sections(content: str) -> dict[str, str]:
+    sections: dict[str, str] = {}
+    current: str | None = None
+    lines_out: list[str] = []
+    for line in content.splitlines():
+        if line.startswith("## "):
+            if current is not None:
+                sections[current] = "\n".join(lines_out).strip()
+            current = line[3:].strip()
+            lines_out = []
+        elif current is not None:
+            lines_out.append(line)
+    if current is not None:
+        sections[current] = "\n".join(lines_out).strip()
+    return sections
+
+
+def _prompt_version() -> str:
+    raw = (os.environ.get("PROMPT_VERSION") or _DEFAULT_PROMPT_VERSION).strip()
+    return raw or _DEFAULT_PROMPT_VERSION
+
+
 def _build_real_system_prompt(mode: ProcessMode) -> str:
-    mode_rules = {
-        ProcessMode.analyze: (
-            "Focus priority: make **summary** and **intent** the most detailed and useful fields. "
-            "Keep **reply** and **tasks** shorter and supportive, but still non-empty strings "
-            "(use a brief placeholder sentence for reply if needed; tasks can be one or two items)."
-        ),
-        ProcessMode.reply: (
-            "Focus priority: make **reply** the most detailed and useful field—this is what the user "
-            "will send back. Keep **summary**, **intent**, and **tasks** brief but still meaningful."
-        ),
-        ProcessMode.extract_tasks: (
-            "Focus priority: make **tasks** the richest field—a clear list of actionable strings. "
-            "Keep **summary**, **intent**, and **reply** short; do not let them overshadow the task list."
-        ),
-    }
+    version = _prompt_version()
+    path = _PROMPTS_DIR / f"process_{version}.md"
+    if not path.is_file():
+        raise LLMConfigurationError(
+            f"PROMPT_VERSION={version!r}: prompt file not found: {path}",
+        )
+    try:
+        raw_text = path.read_text(encoding="utf-8")
+    except OSError as exc:
+        raise LLMConfigurationError(
+            f"PROMPT_VERSION={version!r}: cannot read prompt file {path}: {exc}",
+        ) from exc
+
+    sections = _parse_prompt_markdown_sections(raw_text)
+    mode_key = f"MODE_{mode.value}"
+    for key in ("HEAD", mode_key, "TAIL"):
+        if key not in sections or not sections[key].strip():
+            raise LLMConfigurationError(
+                f"PROMPT_VERSION={version!r}: prompt file {path.name} missing or empty section "
+                f"{key!r}",
+            )
+
+    logger.info(
+        "real_llm prompt_version=%s mode=%s file=%s",
+        version,
+        mode.value,
+        path.name,
+    )
+
     return (
-        "You output a single JSON object only. The entire reply must be valid JSON with no text "
-        "before or after it. Do not use markdown code fences (no ```). Do not add commentary, "
-        "headings, or explanations outside the JSON.\n\n"
-        "Required keys (exactly these four, all required):\n"
-        '- "summary": string\n'
-        '- "intent": string\n'
-        '- "reply": string\n'
-        '- "tasks": array of strings (each item one short actionable task)\n\n'
-        f"Selected mode: {mode.value!r}\n"
-        f"{mode_rules[mode]}\n\n"
-        "Constraints: use double-quoted keys and strings only; no trailing commas; "
-        "tasks must be a JSON array (use [] only if there is truly nothing actionable, prefer at least one item)."
+        sections["HEAD"]
+        + f"\n\nSelected mode: {mode.value!r}\n\n"
+        + sections[mode_key]
+        + "\n\n"
+        + sections["TAIL"]
     )
 
 

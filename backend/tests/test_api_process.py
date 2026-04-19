@@ -65,6 +65,21 @@ def test_process_real_mode_whitespace_only_api_key(monkeypatch: pytest.MonkeyPat
     assert "OPENAI_API_KEY" in body["detail"]
 
 
+def test_process_real_mode_unknown_prompt_version(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("LLM_MODE", "real")
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test-key")
+    monkeypatch.setenv("PROMPT_VERSION", "v999")
+
+    response = client.post(
+        "/process",
+        json={"text": "hello", "mode": "analyze"},
+    )
+    assert response.status_code == 503
+    body = response.json()
+    assert "PROMPT_VERSION" in body["detail"]
+    assert "prompt file" in body["detail"].lower()
+
+
 def test_process_real_mode_accepts_sk_prefixed_key(monkeypatch: pytest.MonkeyPatch) -> None:
     """Real provider keys often start with sk-; must not be rejected as placeholders."""
     monkeypatch.setenv("LLM_MODE", "real")
