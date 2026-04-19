@@ -21,6 +21,8 @@ _REPLY_MODE_EMPTY_FALLBACK = "No reply text was produced."
 def _apply_llm_output_guardrails(resp: ProcessResponse, mode: ProcessMode) -> ProcessResponse:
     tasks: list[str] = []
     for item in resp.tasks:
+        if not isinstance(item, str):
+            continue
         s = item.strip()
         if s:
             tasks.append(s)
