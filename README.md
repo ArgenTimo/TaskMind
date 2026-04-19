@@ -20,6 +20,7 @@ Optional when `LLM_MODE=real`:
 - **`OPENAI_BASE_URL`** — defaults to `https://api.openai.com/v1` (other OpenAI-compatible bases may work).
 - **`OPENAI_MODEL`** — defaults to `gpt-4o-mini`.
 - **`OPENAI_JSON_OBJECT`** — defaults to **`1`**. When enabled, requests use `response_format: json_object` (helps structured output on OpenAI-compatible APIs). Set to **`0`** if your provider rejects that parameter.
+- **`PROMPT_VERSION`** — defaults to **`v1`**. Selects the real-mode system prompt file `backend/prompts/process_{version}.md` (for example `process_v1.md`). If the file is missing or invalid, `POST /process` returns **503** (configuration error). Logs include the prompt version and filename when a real-mode request runs.
 
 **Environment files:** Put secrets and LLM settings in a **project `.env`** file next to `docker-compose.yml` (copy from `.env.example`). The backend service uses Compose **`env_file: .env`** so `OPENAI_API_KEY` is taken **from that file** into the container.
 
