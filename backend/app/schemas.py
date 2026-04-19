@@ -1,4 +1,5 @@
 from enum import Enum
+from typing import Annotated, Literal
 
 from pydantic import BaseModel, Field, model_validator
 
@@ -27,3 +28,33 @@ class ProcessResponse(BaseModel):
     intent: str
     reply: str
     tasks: list[str]
+
+
+class ProcessBatchItemIn(BaseModel):
+    """One row in POST /process_batch (validated per-item in the handler)."""
+
+    text: str = ""
+    mode: str
+
+
+class ProcessBatchRequest(BaseModel):
+    items: list[ProcessBatchItemIn] = Field(..., min_length=1, max_length=100)
+
+
+class BatchItemError(BaseModel):
+    status_code: int
+    detail: str
+
+
+class BatchItemSuccess(BaseModel):
+    success: Literal[True] = True
+    result: ProcessResponse
+
+
+class BatchItemFailure(BaseModel):
+    success: Literal[False] = False
+    error: BatchItemError
+
+
+class ProcessBatchResponse(BaseModel):
+    items: list[Annotated[BatchItemSuccess | BatchItemFailure, Field(discriminator="success")]]

@@ -283,3 +283,69 @@ def test_process_real_mode_reply_mode_empty_reply_fallback(monkeypatch: pytest.M
     assert response.status_code == 200
     data = response.json()
     assert data["reply"] == "No reply text was produced."
+
+
+def test_process_batch_all_success() -> None:
+    response = client.post(
+        "/process_batch",
+        json={
+            "items": [
+                {"text": "hello", "mode": "analyze"},
+                {"text": "world", "mode": "reply"},
+            ],
+        },
+    )
+    assert response.status_code == 200
+    data = response.json()
+    assert len(data["items"]) == 2
+    assert data["items"][0]["success"] is True
+    assert data["items"][1]["success"] is True
+    assert "summary" in data["items"][0]["result"]
+
+
+def test_process_batch_mixed_validation_and_success() -> None:
+    response = client.post(
+        "/process_batch",
+        json={
+            "items": [
+                {"text": "ok", "mode": "analyze"},
+                {"text": "   ", "mode": "analyze"},
+            ],
+        },
+    )
+    assert response.status_code == 200
+    data = response.json()
+    assert data["items"][0]["success"] is True
+    assert data["items"][1]["success"] is False
+    assert data["items"][1]["error"]["status_code"] == 422
+
+
+def test_process_batch_mixed_process_failure(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("LLM_MODE", "real")
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+
+    response = client.post(
+        "/process_batch",
+        json={
+            "items": [
+                {"text": "ok", "mode": "analyze"},
+                {"text": "also ok", "mode": "analyze"},
+            ],
+        },
+    )
+    assert response.status_code == 200
+    data = response.json()
+    assert data["items"][0]["success"] is False
+    assert data["items"][0]["error"]["status_code"] == 503
+    assert data["items"][1]["success"] is False
+    assert data["items"][1]["error"]["status_code"] == 503
+
+
+def test_process_batch_invalid_empty_items() -> None:
+    response = client.post("/process_batch", json={"items": []})
+    assert response.status_code == 422
+
+
+def test_process_batch_invalid_top_level() -> None:
+    response = client.post("/process_batch", json={})
+    assert response.status_code == 422
