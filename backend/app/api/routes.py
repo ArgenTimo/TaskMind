@@ -9,13 +9,14 @@ from app.schemas import (
     BatchItemError,
     BatchItemFailure,
     BatchItemSuccess,
+    ModelsListResponse,
     ProcessBatchRequest,
     ProcessBatchResponse,
     ProcessRequest,
     ProcessResponse,
     RuntimeConfigResponse,
 )
-from app.services.llm import build_runtime_config_response
+from app.services.llm import build_models_list_response, build_runtime_config_response
 from app.services.process import process_input
 
 logger = logging.getLogger(__name__)
@@ -31,6 +32,11 @@ def health() -> dict[str, str]:
 @router.get("/runtime_config", response_model=RuntimeConfigResponse)
 def runtime_config() -> RuntimeConfigResponse:
     return build_runtime_config_response()
+
+
+@router.get("/models", response_model=ModelsListResponse)
+def list_models() -> ModelsListResponse:
+    return build_models_list_response()
 
 
 @router.post("/process", response_model=ProcessResponse)

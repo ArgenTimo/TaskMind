@@ -12,7 +12,14 @@ from typing import Any, Literal
 import httpx
 from pydantic import ValidationError
 
-from app.schemas import ProcessMode, ProcessResponse, RuntimeConfigResponse, RuntimeOverrides
+from app.schemas import (
+    ModelsListResponse,
+    ModelsListSource,
+    ProcessMode,
+    ProcessResponse,
+    RuntimeConfigResponse,
+    RuntimeOverrides,
+)
 
 LLMSourceMode = Literal["stub", "real"]
 
@@ -137,6 +144,10 @@ def resolve_effective_runtime(overrides: RuntimeOverrides | None) -> EffectiveRu
     )
 
 
+def _default_openai_base_url() -> str:
+    return (os.environ.get("OPENAI_BASE_URL") or "https://api.openai.com/v1").rstrip("/")
+
+
 def build_runtime_config_response() -> RuntimeConfigResponse:
     raw_mode = os.environ.get("LLM_MODE", "stub").strip().lower()
     default_llm_mode = raw_mode if raw_mode in ("stub", "real") else "stub"
@@ -144,12 +155,90 @@ def build_runtime_config_response() -> RuntimeConfigResponse:
         default_llm_mode=default_llm_mode,
         default_prompt_version=_default_prompt_version_from_env(),
         default_model=(os.environ.get("OPENAI_MODEL") or "gpt-4o-mini").strip(),
-        default_base_url=(os.environ.get("OPENAI_BASE_URL") or "https://api.openai.com/v1").rstrip(
-            "/",
-        ),
+        default_base_url=_default_openai_base_url(),
         available_prompt_versions=list_available_prompt_versions(),
         real_mode_supported=bool(os.environ.get("OPENAI_API_KEY", "").strip()),
         json_object_request_enabled=_json_object_mode_enabled(),
+    )
+
+
+def build_models_list_response() -> ModelsListResponse:
+    """List models from the configured provider using server-side credentials only."""
+    base_url = _default_openai_base_url()
+    raw_mode = os.environ.get("LLM_MODE", "stub").strip().lower()
+    if raw_mode != "real":
+        return ModelsListResponse(
+            models=[],
+            source=ModelsListSource.stub_mode,
+            detail="Server LLM_MODE is not real; provider model list is not queried.",
+            base_url=base_url,
+        )
+
+    api_key = os.environ.get("OPENAI_API_KEY", "").strip()
+    if not api_key:
+        return ModelsListResponse(
+            models=[],
+            source=ModelsListSource.no_api_key,
+            detail="OPENAI_API_KEY is not set; cannot query provider models.",
+            base_url=base_url,
+        )
+
+    url = f"{base_url}/models"
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+    }
+
+    try:
+        with httpx.Client(timeout=20.0) as client:
+            response = client.get(url, headers=headers)
+    except httpx.RequestError as exc:
+        return ModelsListResponse(
+            models=[],
+            source=ModelsListSource.provider_error,
+            detail=f"Provider request failed: {exc}",
+            base_url=base_url,
+        )
+
+    if response.status_code >= 400:
+        snippet = response.text[:500] if response.text else ""
+        return ModelsListResponse(
+            models=[],
+            source=ModelsListSource.provider_error,
+            detail=f"Provider HTTP {response.status_code}: {snippet}",
+            base_url=base_url,
+        )
+
+    try:
+        body = response.json()
+    except json.JSONDecodeError:
+        return ModelsListResponse(
+            models=[],
+            source=ModelsListSource.provider_error,
+            detail="Provider response body is not valid JSON.",
+            base_url=base_url,
+        )
+
+    raw_items = body.get("data")
+    if not isinstance(raw_items, list):
+        return ModelsListResponse(
+            models=[],
+            source=ModelsListSource.provider_error,
+            detail='Unexpected provider shape: expected top-level "data" array.',
+            base_url=base_url,
+        )
+
+    ids: list[str] = []
+    for item in raw_items:
+        if isinstance(item, dict) and "id" in item and item["id"] is not None:
+            ids.append(str(item["id"]).strip())
+
+    ids = sorted(set(ids))
+    return ModelsListResponse(
+        models=ids,
+        source=ModelsListSource.live,
+        detail=None,
+        base_url=base_url,
     )
 
 

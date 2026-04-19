@@ -12,6 +12,15 @@ type RuntimeConfig = {
   json_object_request_enabled: boolean;
 };
 
+type ModelsListSource = "live" | "stub_mode" | "no_api_key" | "provider_error";
+
+type ModelsInfo = {
+  models: string[];
+  source: ModelsListSource;
+  detail: string | null;
+  base_url: string;
+};
+
 type LLMModeUi = "stub" | "real";
 
 type Mode = "analyze" | "reply" | "extract_tasks";
@@ -65,6 +74,33 @@ const INITIAL_LAST: LastRun = {
   rawJson: null,
   batchLine: null,
 };
+
+const THEME_STORAGE_KEY = "taskmind-theme";
+
+type ThemeChoice = "light" | "dark";
+
+type BatchRow = { id: string; text: string; mode: Mode };
+
+const INITIAL_BATCH_ROWS: BatchRow[] = [
+  { id: "row-a", text: "Hello world", mode: "analyze" },
+  { id: "row-b", text: "- First action\n- Second action", mode: "extract_tasks" },
+];
+
+function formatPrettyRaw(raw: string | null): string {
+  if (raw == null || raw === "") {
+    return "";
+  }
+  const t = raw.trim();
+  try {
+    return JSON.stringify(JSON.parse(t) as object, null, 2);
+  } catch {
+    return raw;
+  }
+}
+
+function newBatchRow(): BatchRow {
+  return { id: crypto.randomUUID(), text: "", mode: "analyze" };
+}
 
 function batchStats(data: BatchResponse): { ok: number; fail: number; line: string } {
   let ok = 0;
@@ -131,6 +167,8 @@ export default function App() {
   const [result, setResult] = useState<Result | null>(null);
 
   const [batchBody, setBatchBody] = useState(BATCH_PLACEHOLDER);
+  const [batchEditorMode, setBatchEditorMode] = useState<"structured" | "raw">("structured");
+  const [batchRows, setBatchRows] = useState<BatchRow[]>(() => [...INITIAL_BATCH_ROWS]);
   const [batchLoading, setBatchLoading] = useState(false);
   const [batchError, setBatchError] = useState<string | null>(null);
   const [batchResult, setBatchResult] = useState<BatchResponse | null>(null);
@@ -140,10 +178,35 @@ export default function App() {
 
   const [runtimeConfig, setRuntimeConfig] = useState<RuntimeConfig | null>(null);
   const [cfgError, setCfgError] = useState<string | null>(null);
+  const [modelsInfo, setModelsInfo] = useState<ModelsInfo | null>(null);
   const [opLlmMode, setOpLlmMode] = useState<LLMModeUi>("stub");
   const [opPromptVersion, setOpPromptVersion] = useState("v1");
   const [opModel, setOpModel] = useState("gpt-4o-mini");
   const [opBaseUrl, setOpBaseUrl] = useState("https://api.openai.com/v1");
+
+  const [theme, setTheme] = useState<ThemeChoice>(() => {
+    if (typeof window === "undefined") {
+      return "dark";
+    }
+    try {
+      const t = localStorage.getItem(THEME_STORAGE_KEY);
+      if (t === "light" || t === "dark") {
+        return t;
+      }
+    } catch {
+      /* ignore */
+    }
+    return "dark";
+  });
+
+  useEffect(() => {
+    document.documentElement.dataset.theme = theme;
+    try {
+      localStorage.setItem(THEME_STORAGE_KEY, theme);
+    } catch {
+      /* ignore */
+    }
+  }, [theme]);
 
   useEffect(() => {
     let cancelled = false;
@@ -175,6 +238,30 @@ export default function App() {
     };
   }, []);
 
+  useEffect(() => {
+    let cancelled = false;
+    fetch(`${apiBase}/models`)
+      .then((r) => {
+        if (!r.ok) {
+          throw new Error(`models ${r.status}`);
+        }
+        return r.json() as Promise<ModelsInfo>;
+      })
+      .then((data) => {
+        if (!cancelled) {
+          setModelsInfo(data);
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setModelsInfo(null);
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   function resetRuntimeToServerDefaults() {
     if (!runtimeConfig) {
       return;
@@ -189,6 +276,51 @@ export default function App() {
     setPanel(next);
     setError(null);
     setBatchError(null);
+  }
+
+  function handleBatchEditorMode(next: "structured" | "raw") {
+    if (next === batchEditorMode) {
+      return;
+    }
+    if (next === "raw") {
+      const items = batchRows.map((r) => ({ text: r.text, mode: r.mode }));
+      setBatchBody(JSON.stringify({ items }, null, 2));
+    } else {
+      try {
+        const p = JSON.parse(batchBody) as { items?: { text?: string; mode?: string }[] };
+        if (p.items && Array.isArray(p.items)) {
+          setBatchRows(
+            p.items.map((it) => {
+              const m = it.mode;
+              const mode: Mode =
+                m === "reply" || m === "extract_tasks" || m === "analyze" ? m : "analyze";
+              return {
+                id: crypto.randomUUID(),
+                text: typeof it.text === "string" ? it.text : "",
+                mode,
+              };
+            }),
+          );
+        }
+      } catch {
+        /* keep existing rows */
+      }
+    }
+    setBatchEditorMode(next);
+  }
+
+  function updateBatchRow(id: string, patch: Partial<Pick<BatchRow, "text" | "mode">>) {
+    setBatchRows((rows) =>
+      rows.map((r) => (r.id === id ? { ...r, ...patch } : r)),
+    );
+  }
+
+  function addBatchRow() {
+    setBatchRows((rows) => [...rows, newBatchRow()]);
+  }
+
+  function removeBatchRow(id: string) {
+    setBatchRows((rows) => (rows.length <= 1 ? rows : rows.filter((r) => r.id !== id)));
   }
 
   async function onSubmitSingle(e: FormEvent) {
@@ -279,21 +411,42 @@ export default function App() {
     const t0 = performance.now();
     try {
       let parsed: unknown;
-      try {
-        parsed = JSON.parse(batchBody) as unknown;
-      } catch {
-        const latencyMs = Math.round(performance.now() - t0);
-        setLastRun({
-          interaction: "batch",
-          httpStatus: null,
-          requestId: null,
-          latencyMs,
-          resultStatus: "error",
-          rawJson: "Invalid JSON — check commas and quotes.",
-          batchLine: null,
-        });
-        setBatchError("Invalid JSON — check commas and quotes.");
-        return;
+      if (batchEditorMode === "structured") {
+        const items = batchRows
+          .map((r) => ({ text: r.text.trim(), mode: r.mode }))
+          .filter((it) => it.text.length > 0);
+        if (items.length === 0) {
+          const latencyMs = Math.round(performance.now() - t0);
+          setLastRun({
+            interaction: "batch",
+            httpStatus: null,
+            requestId: null,
+            latencyMs,
+            resultStatus: "error",
+            rawJson: "Add at least one row with non-empty text.",
+            batchLine: null,
+          });
+          setBatchError("Add at least one row with non-empty text.");
+          return;
+        }
+        parsed = { items };
+      } else {
+        try {
+          parsed = JSON.parse(batchBody) as unknown;
+        } catch {
+          const latencyMs = Math.round(performance.now() - t0);
+          setLastRun({
+            interaction: "batch",
+            httpStatus: null,
+            requestId: null,
+            latencyMs,
+            resultStatus: "error",
+            rawJson: "Invalid JSON — check commas and quotes.",
+            batchLine: null,
+          });
+          setBatchError("Invalid JSON — check commas and quotes.");
+          return;
+        }
       }
       if (
         typeof parsed !== "object" ||
@@ -405,9 +558,21 @@ export default function App() {
     <div className="app-shell">
       <main className="app-main">
         <header className="app-header">
-          <h1 className="app-title">
-            Task<span>Mind</span>
-          </h1>
+          <div className="app-header__top">
+            <div className="app-header__titles">
+              <h1 className="app-title">
+                Task<span>Mind</span>
+              </h1>
+            </div>
+            <button
+              type="button"
+              className="theme-toggle"
+              onClick={() => setTheme((t) => (t === "dark" ? "light" : "dark"))}
+              title={theme === "dark" ? "Switch to light theme" : "Switch to dark theme"}
+            >
+              {theme === "dark" ? "Light" : "Dark"}
+            </button>
+          </div>
           <p className="app-subtitle">
             Operator console — runtime defaults load from <code>GET /runtime_config</code>; optional{" "}
             <code>runtime</code> overrides apply per request only.
@@ -485,22 +650,103 @@ export default function App() {
 
         {panel === "batch" && (
           <form className="card" onSubmit={onSubmitBatch} aria-busy={batchLoading}>
-            <div className="field">
-              <label className="card__label" htmlFor="batch-json">
-                Batch body (JSON)
-              </label>
-              <textarea
-                id="batch-json"
-                className="textarea textarea--mono"
-                value={batchBody}
-                onChange={(e) => setBatchBody(e.target.value)}
-                spellCheck={false}
-              />
-              <p className="hint">
-                Sent as the body of <code>POST /process_batch</code>. HTTP 200 with per-item
-                outcomes.
-              </p>
+            <div className="batch-editor-bar">
+              <span className="batch-editor-bar__label">Editor</span>
+              <div
+                className="batch-mode-toggle"
+                role="group"
+                aria-label="Batch editor mode"
+              >
+                <button
+                  type="button"
+                  aria-pressed={batchEditorMode === "structured"}
+                  onClick={() => handleBatchEditorMode("structured")}
+                >
+                  Rows
+                </button>
+                <button
+                  type="button"
+                  aria-pressed={batchEditorMode === "raw"}
+                  onClick={() => handleBatchEditorMode("raw")}
+                >
+                  Raw JSON
+                </button>
+              </div>
             </div>
+
+            {batchEditorMode === "structured" && (
+              <div className="field">
+                <div className="batch-rows">
+                  {batchRows.map((row, idx) => (
+                    <div key={row.id} className="batch-row">
+                      <div className="batch-row__main">
+                        <span className="batch-row__index">Item {idx + 1}</span>
+                        <textarea
+                          className="batch-row__textarea"
+                          value={row.text}
+                          onChange={(e) => updateBatchRow(row.id, { text: e.target.value })}
+                          placeholder="Text for this item…"
+                          rows={3}
+                        />
+                      </div>
+                      <div className="batch-row__mode">
+                        <select
+                          value={row.mode}
+                          onChange={(e) =>
+                            updateBatchRow(row.id, { mode: e.target.value as Mode })
+                          }
+                          aria-label={`Mode for item ${idx + 1}`}
+                        >
+                          <option value="analyze">analyze</option>
+                          <option value="reply">reply</option>
+                          <option value="extract_tasks">extract_tasks</option>
+                        </select>
+                      </div>
+                      <button
+                        type="button"
+                        className="batch-row__remove"
+                        onClick={() => removeBatchRow(row.id)}
+                        disabled={batchRows.length <= 1}
+                        aria-label={`Remove item ${idx + 1}`}
+                      >
+                        Remove
+                      </button>
+                    </div>
+                  ))}
+                </div>
+                <button
+                  type="button"
+                  className="btn btn--secondary"
+                  style={{ marginTop: "0.65rem" }}
+                  onClick={addBatchRow}
+                >
+                  Add row
+                </button>
+                <p className="hint">
+                  Builds <code>items</code> for <code>POST /process_batch</code>. Empty rows are
+                  skipped.
+                </p>
+              </div>
+            )}
+
+            {batchEditorMode === "raw" && (
+              <div className="field">
+                <label className="card__label" htmlFor="batch-json">
+                  Batch body (JSON)
+                </label>
+                <textarea
+                  id="batch-json"
+                  className="textarea textarea--mono"
+                  value={batchBody}
+                  onChange={(e) => setBatchBody(e.target.value)}
+                  spellCheck={false}
+                />
+                <p className="hint">
+                  Advanced: full request body (must include <code>items</code>). Switch to Rows to
+                  return to the structured editor (content is synced when you toggle).
+                </p>
+              </div>
+            )}
             <div className="actions">
               <button type="submit" className="btn btn--primary" disabled={batchLoading}>
                 {batchLoading && <span className="btn__spinner" aria-hidden />}
@@ -594,7 +840,9 @@ export default function App() {
           <details className={`raw-json ${!lastRun.rawJson ? "raw-json--disabled" : ""}`} open>
             <summary>Raw last response</summary>
             <pre className="raw-json__pre">
-              {lastRun.rawJson ?? "No response captured yet. Run a request to populate."}
+              {lastRun.rawJson
+                ? formatPrettyRaw(lastRun.rawJson)
+                : "No response captured yet. Run a request to populate."}
             </pre>
           </details>
         )}
@@ -722,13 +970,45 @@ export default function App() {
           </div>
           <div className="op-row">
             <span className="op-label">Model</span>
-            <input
-              className="op-input"
-              value={opModel}
-              onChange={(e) => setOpModel(e.target.value)}
-              aria-label="Model override"
-            />
+            {modelsInfo?.source === "live" && modelsInfo.models.length > 0 ? (
+              <select
+                className="op-select"
+                value={opModel}
+                onChange={(e) => setOpModel(e.target.value)}
+                aria-label="Model override"
+              >
+                {!modelsInfo.models.includes(opModel) && opModel.trim() !== "" && (
+                  <option value={opModel}>{opModel} (current)</option>
+                )}
+                {modelsInfo.models.map((id) => (
+                  <option key={id} value={id}>
+                    {id}
+                  </option>
+                ))}
+              </select>
+            ) : (
+              <input
+                className="op-input"
+                value={opModel}
+                onChange={(e) => setOpModel(e.target.value)}
+                placeholder="e.g. gpt-4o-mini"
+                aria-label="Model override"
+              />
+            )}
           </div>
+          {modelsInfo && modelsInfo.source !== "live" && modelsInfo.detail && (
+            <p className="op-placeholder" style={{ marginTop: "0.35rem", marginBottom: 0 }}>
+              Models list: {modelsInfo.detail}{" "}
+              <span className="op-value--dim">({modelsInfo.base_url})</span>
+            </p>
+          )}
+          {modelsInfo?.source === "live" && modelsInfo.models.length > 0 && (
+            <p className="op-placeholder" style={{ marginTop: "0.35rem", marginBottom: 0 }}>
+              Loaded from provider at{" "}
+              <span className="op-value--dim">{modelsInfo.base_url}</span> (server{" "}
+              <code>OPENAI_BASE_URL</code>). Changing Base URL below does not change this list.
+            </p>
+          )}
           <div className="op-row">
             <span className="op-label">Base URL</span>
             <input
