@@ -23,7 +23,9 @@ Optional when `LLM_MODE=real`:
 
 **Environment files:** Put secrets and LLM settings in a **project `.env`** file next to `docker-compose.yml` (copy from `.env.example`). The backend service uses Compose **`env_file: .env`** so `OPENAI_API_KEY` is taken **from that file** into the container.
 
-**Important:** Do **not** rely on a shell `export OPENAI_API_KEY=...` for the API key unless you know what you are doing. For `OPENAI_API_KEY`, a value exported in the shell (for example an old placeholder like `YOUR_KEY_HERE`) can override the project `.env` when using pass-through env—this project **does not** pass `OPENAI_API_KEY` through the shell for that reason; use `.env` for the key. Optional vars like `OPENAI_BASE_URL` may still be overridden by the shell—see `docker-compose.yml`.
+**Important:** Do **not** rely on a shell `export OPENAI_API_KEY=...` for the API key unless you know what you are doing. For `OPENAI_API_KEY`, a value exported in the shell (for example an old placeholder like `YOUR_KEY_HERE`) can override the project `.env` when using pass-through env—this project **does not** pass `OPENAI_API_KEY` through the shell for that reason; use `.env` for the key.
+
+**`LLM_MODE` in Docker Compose:** Set `LLM_MODE` in the project `.env` (loaded via `env_file`). It is **not** set through Compose `environment:` interpolation, so a stale `export LLM_MODE=stub` in your shell cannot override `LLM_MODE=real` from `.env` (same class of bug as with the API key). Optional vars like `OPENAI_BASE_URL` may still be overridden by the shell when interpolated—see `docker-compose.yml`.
 
 Set `OPENAI_API_KEY` to the secret issued by your provider. Never commit `.env`.
 
@@ -33,7 +35,7 @@ Set `OPENAI_API_KEY` to the secret issued by your provider. Never commit `.env`.
 docker compose up --build
 ```
 
-With `LLM_MODE=stub` or unset in `.env` / environment (default in Compose is `stub`).
+With `LLM_MODE=stub` or unset in `.env` (the backend defaults to `stub` when `LLM_MODE` is absent).
 
 **Real mode (requires a key)**
 
@@ -45,13 +47,7 @@ cp .env.example .env
 docker compose up --build
 ```
 
-Or export in the shell (no `.env` required):
-
-```bash
-export LLM_MODE=real
-export OPENAI_API_KEY="..."   # value from your provider
-docker compose up --build
-```
+When using **Docker Compose**, prefer the project `.env` for `LLM_MODE` and `OPENAI_API_KEY` as above. Running the backend **outside** Docker, you can use shell exports instead; inside Compose, those variables reach the container through `env_file`, not from arbitrary shell exports unless you add explicit Compose mapping (this project does not map `LLM_MODE` from the shell, to avoid overriding `.env`).
 
 If `LLM_MODE=real` and `OPENAI_API_KEY` is **unset**, **empty**, or **whitespace-only** after trim, `POST /process` returns **503** (configuration error; **no** provider call). The backend does **not** inspect key contents. Invalid or revoked keys may still yield **502** from the provider after a call.
 
@@ -112,10 +108,11 @@ Expected: all tests pass.
 
 ### 5) Real mode misconfiguration (optional)
 
-Start stack with `LLM_MODE=real` and **without** `OPENAI_API_KEY`:
+Start the stack with `LLM_MODE=real` and **without** a usable `OPENAI_API_KEY` (omit the variable or leave it unset/empty in `.env`). Because Compose loads `LLM_MODE` from the project `.env` file, set it there rather than relying on a shell prefix:
 
 ```bash
-LLM_MODE=real OPENAI_API_KEY= docker compose up --build
+# In `.env`: LLM_MODE=real and do not set OPENAI_API_KEY (or set it to empty).
+docker compose up --build
 ```
 
 Then:
