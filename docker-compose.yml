@@ -12,7 +12,8 @@ services:
         required: false
     environment:
       - FRONTEND_ORIGIN=http://localhost:5173,http://127.0.0.1:5173
-      - LLM_MODE=${LLM_MODE:-stub}
+      # LLM_MODE must come from env_file (.env) only — do not set it here. A host-interpolated
+      # LLM_MODE=${...} overrides .env and can force stub if the shell has a stale LLM_MODE.
       - OPENAI_BASE_URL
       - OPENAI_MODEL
       - OPENAI_JSON_OBJECT

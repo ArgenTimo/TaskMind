@@ -5,11 +5,14 @@ from __future__ import annotations
 import json
 import os
 import re
-from typing import Any
+from typing import Any, Literal
 
 import httpx
+from pydantic import ValidationError
 
 from app.schemas import ProcessMode, ProcessResponse
+
+LLMSourceMode = Literal["stub", "real"]
 
 
 class LLMConfigurationError(Exception):
@@ -21,22 +24,38 @@ class LLMConfigurationError(Exception):
 
 
 class LLMUpstreamError(Exception):
-    """Provider HTTP error, timeout, or unparseable response."""
+    """Non-2xx HTTP from provider, network/request failure, or unexpected response shape."""
 
     def __init__(self, message: str) -> None:
         super().__init__(message)
         self.message = message
 
 
-def generate_structured(text: str, mode: ProcessMode) -> ProcessResponse:
+class LLMJsonParseError(Exception):
+    """Provider returned assistant content that is not valid JSON."""
+
+    def __init__(self, message: str) -> None:
+        super().__init__(message)
+        self.message = message
+
+
+class LLMSchemaValidationError(Exception):
+    """Assistant JSON parsed but does not match ProcessResponse."""
+
+    def __init__(self, message: str) -> None:
+        super().__init__(message)
+        self.message = message
+
+
+def generate_structured(text: str, mode: ProcessMode) -> tuple[ProcessResponse, LLMSourceMode]:
     raw = os.environ.get("LLM_MODE", "stub").strip().lower()
     if raw not in ("stub", "real"):
         raise LLMConfigurationError(
             f"Invalid LLM_MODE={raw!r}; use 'stub' or 'real'.",
         )
     if raw == "stub":
-        return _stub_generate(text, mode)
-    return _real_generate(text, mode)
+        return _stub_generate(text, mode), "stub"
+    return _real_generate(text, mode), "real"
 
 
 def _stub_generate(text: str, mode: ProcessMode) -> ProcessResponse:
@@ -162,15 +181,21 @@ def _real_generate(text: str, mode: ProcessMode) -> ProcessResponse:
 
     try:
         body = response.json()
+    except json.JSONDecodeError as exc:
+        raise LLMUpstreamError("LLM response body is not valid JSON.") from exc
+
+    try:
         content = body["choices"][0]["message"]["content"]
-    except (KeyError, IndexError, TypeError, ValueError) as exc:
+    except (KeyError, IndexError, TypeError) as exc:
         raise LLMUpstreamError(f"Unexpected LLM response shape: {exc}") from exc
 
     data = _parse_json_content(content)
     try:
         return ProcessResponse.model_validate(data)
-    except Exception as exc:
-        raise LLMUpstreamError(f"LLM JSON did not match schema: {exc}") from exc
+    except ValidationError as exc:
+        raise LLMSchemaValidationError(
+            "LLM JSON does not match ProcessResponse.",
+        ) from exc
 
 
 _JSON_OBJECT = re.compile(r"\{[\s\S]*\}")
@@ -184,6 +209,11 @@ def _parse_json_content(content: str) -> Any:
         pass
     match = _JSON_OBJECT.search(text)
     if match:
-        return json.loads(match.group())
-    raise LLMUpstreamError("Could not parse JSON from LLM content.")
+        try:
+            return json.loads(match.group())
+        except json.JSONDecodeError as exc:
+            raise LLMJsonParseError(
+                "LLM assistant content is not valid JSON.",
+            ) from exc
+    raise LLMJsonParseError("LLM assistant content is not valid JSON.")
 
