@@ -19,6 +19,38 @@ def test_health() -> None:
     assert response.json() == {"status": "ok"}
 
 
+def test_runtime_config() -> None:
+    response = client.get("/runtime_config")
+    assert response.status_code == 200
+    data = response.json()
+    assert "default_llm_mode" in data
+    assert "default_prompt_version" in data
+    assert "default_model" in data
+    assert "default_base_url" in data
+    assert "available_prompt_versions" in data
+    assert isinstance(data["available_prompt_versions"], list)
+    assert "real_mode_supported" in data
+    assert "json_object_request_enabled" in data
+
+
+def test_process_runtime_override_stub_bypasses_real_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Request-scoped stub mode must not require OPENAI_API_KEY even if LLM_MODE=real in env."""
+    monkeypatch.setenv("LLM_MODE", "real")
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+
+    response = client.post(
+        "/process",
+        json={
+            "text": "hello",
+            "mode": "analyze",
+            "runtime": {"llm_mode": "stub"},
+        },
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["summary"].startswith("[analyze]")
+
+
 def test_process_valid() -> None:
     response = client.post(
         "/process",

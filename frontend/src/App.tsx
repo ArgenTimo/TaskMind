@@ -1,6 +1,18 @@
-import { type FormEvent, useState } from "react";
+import { type FormEvent, useEffect, useState } from "react";
 
 import "./App.css";
+
+type RuntimeConfig = {
+  default_llm_mode: string;
+  default_prompt_version: string;
+  default_model: string;
+  default_base_url: string;
+  available_prompt_versions: string[];
+  real_mode_supported: boolean;
+  json_object_request_enabled: boolean;
+};
+
+type LLMModeUi = "stub" | "real";
 
 type Mode = "analyze" | "reply" | "extract_tasks";
 
@@ -82,6 +94,33 @@ async function parseHttpErrorBody(res: Response, bodyText: string): Promise<stri
   return bodyText || `${res.status} ${res.statusText}`;
 }
 
+function buildRuntimePayload(
+  llmMode: LLMModeUi,
+  promptVersion: string,
+  model: string,
+  baseUrl: string,
+): { llm_mode: LLMModeUi; prompt_version?: string; model?: string; base_url?: string } {
+  const r: {
+    llm_mode: LLMModeUi;
+    prompt_version?: string;
+    model?: string;
+    base_url?: string;
+  } = { llm_mode: llmMode };
+  const pv = promptVersion.trim();
+  const m = model.trim();
+  const b = baseUrl.trim();
+  if (pv) {
+    r.prompt_version = pv;
+  }
+  if (m) {
+    r.model = m;
+  }
+  if (b) {
+    r.base_url = b;
+  }
+  return r;
+}
+
 export default function App() {
   const [panel, setPanel] = useState<"single" | "batch">("single");
 
@@ -99,6 +138,53 @@ export default function App() {
   const [lastRun, setLastRun] = useState<LastRun>(INITIAL_LAST);
   const [showRawJson, setShowRawJson] = useState(true);
 
+  const [runtimeConfig, setRuntimeConfig] = useState<RuntimeConfig | null>(null);
+  const [cfgError, setCfgError] = useState<string | null>(null);
+  const [opLlmMode, setOpLlmMode] = useState<LLMModeUi>("stub");
+  const [opPromptVersion, setOpPromptVersion] = useState("v1");
+  const [opModel, setOpModel] = useState("gpt-4o-mini");
+  const [opBaseUrl, setOpBaseUrl] = useState("https://api.openai.com/v1");
+
+  useEffect(() => {
+    let cancelled = false;
+    fetch(`${apiBase}/runtime_config`)
+      .then((r) => {
+        if (!r.ok) {
+          throw new Error(`runtime_config ${r.status}`);
+        }
+        return r.json() as Promise<RuntimeConfig>;
+      })
+      .then((cfg) => {
+        if (cancelled) {
+          return;
+        }
+        setRuntimeConfig(cfg);
+        setCfgError(null);
+        setOpLlmMode(cfg.default_llm_mode === "real" ? "real" : "stub");
+        setOpPromptVersion(cfg.default_prompt_version);
+        setOpModel(cfg.default_model);
+        setOpBaseUrl(cfg.default_base_url);
+      })
+      .catch((e: unknown) => {
+        if (!cancelled) {
+          setCfgError(e instanceof Error ? e.message : "Failed to load /runtime_config");
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  function resetRuntimeToServerDefaults() {
+    if (!runtimeConfig) {
+      return;
+    }
+    setOpLlmMode(runtimeConfig.default_llm_mode === "real" ? "real" : "stub");
+    setOpPromptVersion(runtimeConfig.default_prompt_version);
+    setOpModel(runtimeConfig.default_model);
+    setOpBaseUrl(runtimeConfig.default_base_url);
+  }
+
   function switchPanel(next: "single" | "batch") {
     setPanel(next);
     setError(null);
@@ -114,7 +200,11 @@ export default function App() {
       const res = await fetch(`${apiBase}/process`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ text, mode }),
+        body: JSON.stringify({
+          text,
+          mode,
+          runtime: buildRuntimePayload(opLlmMode, opPromptVersion, opModel, opBaseUrl),
+        }),
       });
       const latencyMs = Math.round(performance.now() - t0);
       const requestId = res.headers.get("x-request-id");
@@ -223,10 +313,14 @@ export default function App() {
         });
         throw new Error('Body must be a JSON object with an "items" array.');
       }
+      const batchPayload = {
+        ...(parsed as object),
+        runtime: buildRuntimePayload(opLlmMode, opPromptVersion, opModel, opBaseUrl),
+      };
       const res = await fetch(`${apiBase}/process_batch`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(parsed),
+        body: JSON.stringify(batchPayload),
       });
       const latencyMs = Math.round(performance.now() - t0);
       const requestId = res.headers.get("x-request-id");
@@ -315,10 +409,14 @@ export default function App() {
             Task<span>Mind</span>
           </h1>
           <p className="app-subtitle">
-            Operator console — run single or batch requests against the TaskMind API. Diagnostics on
-            the right update from the last completed call (client-side timing + response headers
-            when exposed).
+            Operator console — runtime defaults load from <code>GET /runtime_config</code>; optional{" "}
+            <code>runtime</code> overrides apply per request only.
           </p>
+          {cfgError && (
+            <p className="alert" style={{ marginTop: "0.75rem", maxWidth: "36rem" }}>
+              Config: {cfgError} (operator fields use fallbacks)
+            </p>
+          )}
         </header>
 
         <div className="panel-toggle" role="group" aria-label="Request type">
@@ -579,52 +677,70 @@ export default function App() {
           )}
         </div>
 
-        <h2 className="operator-panel__title">Server context (not in API)</h2>
+        <h2 className="operator-panel__title">Runtime overrides</h2>
         <div className="op-section">
-          <p className="op-placeholder">
-            The API does not return runtime config. Values below are placeholders for a future
-            config surface or server support.
+          <p className="op-hint" style={{ marginTop: 0 }}>
+            Sent as <code>runtime</code> on each <code>/process</code> or <code>/process_batch</code>{" "}
+            call. Empty optional fields fall back to server defaults. Does not change{" "}
+            <code>.env</code>.
           </p>
+          {runtimeConfig && !runtimeConfig.real_mode_supported && opLlmMode === "real" && (
+            <p className="op-placeholder" style={{ marginBottom: "0.5rem" }}>
+              Server reports no API key — real mode will return 503 unless{" "}
+              <code>OPENAI_API_KEY</code> is set.
+            </p>
+          )}
           <div className="op-row">
-            <span className="op-label">LLM source</span>
-            <input
-              className="op-input"
-              readOnly
-              disabled
-              value="stub vs real (LLM_MODE)"
-              aria-label="LLM source placeholder"
-            />
+            <span className="op-label">LLM mode</span>
+            <select
+              className="op-select"
+              value={opLlmMode}
+              onChange={(e) => setOpLlmMode(e.target.value as LLMModeUi)}
+              aria-label="LLM mode override"
+            >
+              <option value="stub">stub</option>
+              <option value="real">real</option>
+            </select>
           </div>
           <div className="op-row">
             <span className="op-label">Prompt version</span>
             <input
               className="op-input"
-              readOnly
-              disabled
-              value="e.g. v1 (PROMPT_VERSION)"
-              aria-label="Prompt version placeholder"
+              value={opPromptVersion}
+              onChange={(e) => setOpPromptVersion(e.target.value)}
+              list={runtimeConfig ? "prompt-versions" : undefined}
+              placeholder="v1"
+              aria-label="Prompt version"
             />
+            {runtimeConfig && (
+              <datalist id="prompt-versions">
+                {runtimeConfig.available_prompt_versions.map((v) => (
+                  <option key={v} value={v} />
+                ))}
+              </datalist>
+            )}
           </div>
           <div className="op-row">
             <span className="op-label">Model</span>
             <input
               className="op-input"
-              readOnly
-              disabled
-              value="OPENAI_MODEL on server"
-              aria-label="Model placeholder"
+              value={opModel}
+              onChange={(e) => setOpModel(e.target.value)}
+              aria-label="Model override"
             />
           </div>
           <div className="op-row">
-            <span className="op-label">Environment</span>
+            <span className="op-label">Base URL</span>
             <input
               className="op-input"
-              readOnly
-              disabled
-              value="Configure via .env / Compose"
-              aria-label="Environment placeholder"
+              value={opBaseUrl}
+              onChange={(e) => setOpBaseUrl(e.target.value)}
+              aria-label="OpenAI-compatible base URL"
             />
           </div>
+          <button type="button" className="op-btn-reset" onClick={resetRuntimeToServerDefaults}>
+            Reset to server defaults
+          </button>
         </div>
       </aside>
     </div>

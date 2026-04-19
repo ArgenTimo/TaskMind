@@ -5,18 +5,29 @@ from __future__ import annotations
 import json
 import os
 import re
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
 
 import httpx
 from pydantic import ValidationError
 
-from app.schemas import ProcessMode, ProcessResponse
+from app.schemas import ProcessMode, ProcessResponse, RuntimeConfigResponse, RuntimeOverrides
 
 LLMSourceMode = Literal["stub", "real"]
 
 _PROMPTS_DIR = Path(__file__).resolve().parent.parent.parent / "prompts"
 _DEFAULT_PROMPT_VERSION = "v1"
+
+
+@dataclass(frozen=True)
+class EffectiveRuntime:
+    """Resolved per-request settings (not global env mutation)."""
+
+    llm_mode: Literal["stub", "real"]
+    prompt_version: str
+    model: str
+    base_url: str
 
 
 class LLMConfigurationError(Exception):
@@ -51,15 +62,105 @@ class LLMSchemaValidationError(Exception):
         self.message = message
 
 
-def generate_structured(text: str, mode: ProcessMode) -> tuple[ProcessResponse, LLMSourceMode]:
-    raw = os.environ.get("LLM_MODE", "stub").strip().lower()
-    if raw not in ("stub", "real"):
-        raise LLMConfigurationError(
-            f"Invalid LLM_MODE={raw!r}; use 'stub' or 'real'.",
+def list_available_prompt_versions() -> list[str]:
+    versions: list[str] = []
+    if not _PROMPTS_DIR.is_dir():
+        return versions
+    for path in _PROMPTS_DIR.glob("process_*.md"):
+        stem = path.stem
+        if stem.startswith("process_"):
+            versions.append(stem[len("process_") :])
+    return sorted(set(versions))
+
+
+def _default_prompt_version_from_env() -> str:
+    raw = (os.environ.get("PROMPT_VERSION") or _DEFAULT_PROMPT_VERSION).strip()
+    return raw or _DEFAULT_PROMPT_VERSION
+
+
+def get_prompt_version() -> str:
+    """PROMPT_VERSION from environment (for legacy callers)."""
+    return _default_prompt_version_from_env()
+
+
+def resolve_effective_runtime(overrides: RuntimeOverrides | None) -> EffectiveRuntime:
+    """Merge optional request overrides with process environment defaults."""
+    raw_env = os.environ.get("LLM_MODE", "stub").strip().lower()
+    if overrides is not None and overrides.llm_mode is not None:
+        mode: Literal["stub", "real"] = overrides.llm_mode.value
+    else:
+        if raw_env not in ("stub", "real"):
+            raise LLMConfigurationError(
+                f"Invalid LLM_MODE={raw_env!r}; use 'stub' or 'real', or pass runtime.llm_mode.",
+            )
+        mode = raw_env  # type: ignore[assignment]
+
+    pv_raw = (
+        overrides.prompt_version.strip()
+        if overrides is not None and overrides.prompt_version
+        else _default_prompt_version_from_env()
+    )
+    prompt_version = pv_raw or _DEFAULT_PROMPT_VERSION
+
+    model_raw = (
+        overrides.model.strip()
+        if overrides is not None and overrides.model
+        else (os.environ.get("OPENAI_MODEL") or "gpt-4o-mini").strip()
+    )
+    model = model_raw or "gpt-4o-mini"
+
+    default_base = (os.environ.get("OPENAI_BASE_URL") or "https://api.openai.com/v1").rstrip("/")
+    if overrides is not None and overrides.base_url is not None:
+        base_url = str(overrides.base_url).rstrip("/")
+    else:
+        base_url = default_base
+
+    if mode == "stub":
+        return EffectiveRuntime(
+            llm_mode="stub",
+            prompt_version="-",
+            model="-",
+            base_url="-",
         )
-    if raw == "stub":
+
+    path = _PROMPTS_DIR / f"process_{prompt_version}.md"
+    if not path.is_file():
+        raise LLMConfigurationError(
+            f"PROMPT_VERSION={prompt_version!r}: prompt file not found: {path}",
+        )
+
+    return EffectiveRuntime(
+        llm_mode="real",
+        prompt_version=prompt_version,
+        model=model,
+        base_url=base_url,
+    )
+
+
+def build_runtime_config_response() -> RuntimeConfigResponse:
+    raw_mode = os.environ.get("LLM_MODE", "stub").strip().lower()
+    default_llm_mode = raw_mode if raw_mode in ("stub", "real") else "stub"
+    return RuntimeConfigResponse(
+        default_llm_mode=default_llm_mode,
+        default_prompt_version=_default_prompt_version_from_env(),
+        default_model=(os.environ.get("OPENAI_MODEL") or "gpt-4o-mini").strip(),
+        default_base_url=(os.environ.get("OPENAI_BASE_URL") or "https://api.openai.com/v1").rstrip(
+            "/",
+        ),
+        available_prompt_versions=list_available_prompt_versions(),
+        real_mode_supported=bool(os.environ.get("OPENAI_API_KEY", "").strip()),
+        json_object_request_enabled=_json_object_mode_enabled(),
+    )
+
+
+def generate_structured(
+    text: str,
+    mode: ProcessMode,
+    eff: EffectiveRuntime,
+) -> tuple[ProcessResponse, LLMSourceMode]:
+    if eff.llm_mode == "stub":
         return _stub_generate(text, mode), "stub"
-    return _real_generate(text, mode), "real"
+    return _real_generate(text, mode, eff), "real"
 
 
 def _stub_generate(text: str, mode: ProcessMode) -> ProcessResponse:
@@ -118,28 +219,17 @@ def _parse_prompt_markdown_sections(content: str) -> dict[str, str]:
     return sections
 
 
-def _prompt_version() -> str:
-    raw = (os.environ.get("PROMPT_VERSION") or _DEFAULT_PROMPT_VERSION).strip()
-    return raw or _DEFAULT_PROMPT_VERSION
-
-
-def get_prompt_version() -> str:
-    """Active PROMPT_VERSION label (for real-mode observability)."""
-    return _prompt_version()
-
-
-def _build_real_system_prompt(mode: ProcessMode) -> str:
-    version = _prompt_version()
-    path = _PROMPTS_DIR / f"process_{version}.md"
+def _build_real_system_prompt(mode: ProcessMode, prompt_version: str) -> str:
+    path = _PROMPTS_DIR / f"process_{prompt_version}.md"
     if not path.is_file():
         raise LLMConfigurationError(
-            f"PROMPT_VERSION={version!r}: prompt file not found: {path}",
+            f"PROMPT_VERSION={prompt_version!r}: prompt file not found: {path}",
         )
     try:
         raw_text = path.read_text(encoding="utf-8")
     except OSError as exc:
         raise LLMConfigurationError(
-            f"PROMPT_VERSION={version!r}: cannot read prompt file {path}: {exc}",
+            f"PROMPT_VERSION={prompt_version!r}: cannot read prompt file {path}: {exc}",
         ) from exc
 
     sections = _parse_prompt_markdown_sections(raw_text)
@@ -147,7 +237,7 @@ def _build_real_system_prompt(mode: ProcessMode) -> str:
     for key in ("HEAD", mode_key, "TAIL"):
         if key not in sections or not sections[key].strip():
             raise LLMConfigurationError(
-                f"PROMPT_VERSION={version!r}: prompt file {path.name} missing or empty section "
+                f"PROMPT_VERSION={prompt_version!r}: prompt file {path.name} missing or empty section "
                 f"{key!r}",
             )
 
@@ -168,7 +258,7 @@ def _build_real_user_message(text: str) -> str:
     )
 
 
-def _real_generate(text: str, mode: ProcessMode) -> ProcessResponse:
+def _real_generate(text: str, mode: ProcessMode, eff: EffectiveRuntime) -> ProcessResponse:
     raw = os.environ.get("OPENAI_API_KEY", "")
     api_key = raw.strip()
     if not api_key:
@@ -176,15 +266,13 @@ def _real_generate(text: str, mode: ProcessMode) -> ProcessResponse:
             "LLM_MODE=real requires OPENAI_API_KEY to be set (non-empty).",
         )
 
-    base = (os.environ.get("OPENAI_BASE_URL") or "https://api.openai.com/v1").rstrip("/")
-    model = (os.environ.get("OPENAI_MODEL") or "gpt-4o-mini").strip()
-    url = f"{base}/chat/completions"
+    url = f"{eff.base_url}/chat/completions"
 
-    system = _build_real_system_prompt(mode)
+    system = _build_real_system_prompt(mode, eff.prompt_version)
     user = _build_real_user_message(text)
 
     payload: dict[str, Any] = {
-        "model": model,
+        "model": eff.model,
         "messages": [
             {"role": "system", "content": system},
             {"role": "user", "content": user},
@@ -247,4 +335,3 @@ def _parse_json_content(content: str) -> Any:
                 "LLM assistant content is not valid JSON.",
             ) from exc
     raise LLMJsonParseError("LLM assistant content is not valid JSON.")
-
