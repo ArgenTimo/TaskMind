@@ -1,0 +1,190 @@
+[
+  {
+    "id": "analyze-short",
+    "description": "Short text in analyze mode returns structured fields",
+    "text": "hello world",
+    "mode": "analyze",
+    "expect": {
+      "status": 200,
+      "has_keys": ["summary", "intent", "reply", "tasks"],
+      "summary_nonempty": true,
+      "intent_nonempty": true,
+      "tasks_is_list": true,
+      "summary_max_length": 400,
+      "tasks_no_empty_items": true
+    }
+  },
+  {
+    "id": "analyze-multiline",
+    "description": "Multiline user text in analyze mode",
+    "text": "Line one.\nLine two.\nLine three.",
+    "mode": "analyze",
+    "expect": {
+      "status": 200,
+      "has_keys": ["summary", "intent", "reply", "tasks"],
+      "summary_nonempty": true,
+      "intent_nonempty": true,
+      "tasks_is_list": true,
+      "summary_max_length": 400,
+      "tasks_no_empty_items": true
+    }
+  },
+  {
+    "id": "reply-basic",
+    "description": "Reply mode returns non-empty reply (stub)",
+    "text": "Can you confirm the meeting time?",
+    "mode": "reply",
+    "expect": {
+      "status": 200,
+      "has_keys": ["summary", "intent", "reply", "tasks"],
+      "summary_nonempty": true,
+      "intent_nonempty": true,
+      "reply_nonempty": true,
+      "tasks_is_list": true,
+      "summary_max_length": 400,
+      "tasks_no_empty_items": true
+    }
+  },
+  {
+    "id": "reply-long-input",
+    "description": "Reply mode with longer input still has non-empty reply",
+    "text": "Please draft a short acknowledgment for the client about the delayed shipment and next steps.",
+    "mode": "reply",
+    "expect": {
+      "status": 200,
+      "reply_nonempty": true,
+      "summary_max_length": 400,
+      "tasks_no_empty_items": true
+    }
+  },
+  {
+    "id": "extract-bullets",
+    "description": "extract_tasks with bullet lines yields non-empty tasks (stub)",
+    "text": "- Call Alice\n- Email Bob\n- Update the doc",
+    "mode": "extract_tasks",
+    "expect": {
+      "status": 200,
+      "has_keys": ["summary", "intent", "reply", "tasks"],
+      "tasks_is_list": true,
+      "tasks_nonempty": true,
+      "tasks_no_empty_items": true,
+      "summary_max_length": 400,
+      "intent_nonempty": true
+    }
+  },
+  {
+    "id": "extract-numbered",
+    "description": "Numbered lines become tasks",
+    "text": "1. Review PR\n2. Deploy\n3. Notify team",
+    "mode": "extract_tasks",
+    "expect": {
+      "status": 200,
+      "tasks_nonempty": true,
+      "tasks_no_empty_items": true,
+      "summary_max_length": 400
+    }
+  },
+  {
+    "id": "extract-single-line-actions",
+    "description": "Single line with multiple words yields follow-up tasks (stub fallback)",
+    "text": "urgent fix deploy test",
+    "mode": "extract_tasks",
+    "expect": {
+      "status": 200,
+      "tasks_is_list": true,
+      "tasks_nonempty": true,
+      "tasks_no_empty_items": true
+    }
+  },
+  {
+    "id": "summary-length-bound",
+    "description": "Very long input keeps summary within cap (stub snippet + guardrails)",
+    "text": "START xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx END",
+    "mode": "analyze",
+    "expect": {
+      "status": 200,
+      "summary_max_length": 400,
+      "tasks_no_empty_items": true
+    }
+  },
+  {
+    "id": "analyze-unicode",
+    "description": "Non-ASCII text still returns valid structure",
+    "text": "你好世界 • café résumé",
+    "mode": "analyze",
+    "expect": {
+      "status": 200,
+      "has_keys": ["summary", "intent", "reply", "tasks"],
+      "summary_nonempty": true,
+      "intent_nonempty": true,
+      "tasks_is_list": true,
+      "summary_max_length": 400
+    }
+  },
+  {
+    "id": "reply-minimal-text",
+    "description": "Minimal non-empty text in reply mode",
+    "text": "ok",
+    "mode": "reply",
+    "expect": {
+      "status": 200,
+      "reply_nonempty": true,
+      "tasks_is_list": true
+    }
+  },
+  {
+    "id": "extract-empty-lines-filtered",
+    "description": "Mixed blank lines and bullets still produce tasks",
+    "text": "\n\n- First task\n\n\n- Second task\n",
+    "mode": "extract_tasks",
+    "expect": {
+      "status": 200,
+      "tasks_nonempty": true,
+      "tasks_no_empty_items": true
+    }
+  },
+  {
+    "id": "invalid-mode-422",
+    "description": "Invalid process mode rejected by API validation",
+    "text": "hello",
+    "mode": "not_a_valid_mode",
+    "expect": {
+      "status": 422
+    }
+  },
+  {
+    "id": "empty-text-422",
+    "description": "Empty text rejected",
+    "text": "",
+    "mode": "analyze",
+    "expect": {
+      "status": 422
+    }
+  },
+  {
+    "id": "analyze-minimal",
+    "description": "Single character input",
+    "text": "a",
+    "mode": "analyze",
+    "expect": {
+      "status": 200,
+      "summary_nonempty": true,
+      "intent_nonempty": true,
+      "tasks_is_list": true,
+      "summary_max_length": 400
+    }
+  },
+  {
+    "id": "extract-max-tasks-bounded",
+    "description": "Many lines still return a list (stub caps task count)",
+    "text": "LINE\nLINE\nLINE\nLINE\nLINE\nLINE\nLINE\nLINE\nLINE\nLINE\nLINE\nLINE\nLINE\nLINE\nLINE",
+    "mode": "extract_tasks",
+    "expect": {
+      "status": 200,
+      "tasks_is_list": true,
+      "tasks_nonempty": true,
+      "tasks_no_empty_items": true,
+      "summary_max_length": 400
+    }
+  }
+]
